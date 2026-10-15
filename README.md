@@ -1,295 +1,252 @@
-# 🛡️ SecureLAN: Enterprise Zero Trust Communication Suite & Inline TLS Inspection Proxy
+<div align="center">
 
-> A high-performance, real-time collaboration suite featuring **video conferencing, N-1 mixed audio streaming, screen sharing, group chat, and chunked file transfer** — hardened with an enterprise-grade **Zero Trust Architecture**, **Inline TLS/mTLS Inspection Proxy**, and **Real-Time Data Loss Prevention (DLP)** engine inspired by **Zscaler's Zero Trust Exchange**.
+# SecureLAN
+
+### Zero Trust Communication Suite with Inline TLS Inspection Proxy
+
+Real-time video, audio, screen sharing, chat and file transfer, secured by mTLS, JWT/RBAC, inline DLP and audit logging.
+
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Qt](https://img.shields.io/badge/UI-PySide6-41CD52?logo=qt&logoColor=white)
+![TLS](https://img.shields.io/badge/TLS-1.2%2B%20%7C%20mTLS-blue)
+![Auth](https://img.shields.io/badge/Auth-JWT%20%2B%20RBAC-orange)
+![DLP](https://img.shields.io/badge/DLP-9%20detectors-red)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
+
+[Architecture](#architecture) · [Features](#features) · [Security Modules](#security-modules) · [Quick Start](#quick-start) · [Demos](#demos) · [Structure](#project-structure)
+
+</div>
 
 ---
 
-## 📑 Table of Contents
-1. [Architectural Overview](#-architectural-overview)
-2. [What Was Already Present (Baseline Capabilities)](#-what-was-already-present-baseline-capabilities)
-3. [What Was Added (Enterprise Security Architecture)](#-what-was-added-enterprise-security-architecture)
-4. [Deep Dive into Security Modules](#-deep-dive-into-security-modules)
-5. [Network Port & Protocol Matrix](#-network-port--protocol-matrix)
-6. [Prerequisites & Installation](#-prerequisites--installation)
-7. [Step-by-Step Execution Guide](#-step-by-step-execution-guide)
-8. [Instant Interview Demos (CLI One-Liners)](#-instant-interview-demos-cli-one-liners)
-9. [Resume Presentation & Talking Points](#-resume-presentation--talking-points)
-10. [Repository Directory Structure](#-repository-directory-structure)
+## Overview
 
----
+SecureLAN is a multi-threaded, asyncio-based LAN collaboration suite. Instead of letting clients talk directly to the origin server, all control and chat traffic passes through an **inline TLS inspection proxy** that decrypts, inspects, enforces policy, redacts sensitive data, and re-encrypts upstream. The design is inspired by the Zero Trust Exchange model used by Zscaler.
 
-## 🏛️ Architectural Overview
+## Architecture
 
-The project implements a modern **Zero Trust Network Architecture (ZTNA)**. Instead of allowing clients to connect directly to the origin server unmonitored, all control and chat traffic traverses an **Inline TLS Inspection Proxy**:
-
-```text
- ┌────────────────────────────────────────────────────────┐
- │                      Client Tier                       │
- │  (PySide6 UI / CLI Client / Media Transceiver Threads) │
- └──────────────────────────┬─────────────────────────────┘
-                            │
-              [TLS Handshake 1: Mutual TLS]
-                            ▼
- ┌────────────────────────────────────────────────────────┐
- │           Inline TLS Inspection Proxy (:5443)          │
- │   ┌────────────────────────────────────────────────┐   │
- │   │  TLS Termination & Decryption                  │   │
- │   │  ────────────────────────────────────────────  │   │
- │   │  Deep Packet Inspection (DPI) & Magic Bytes    │   │
- │   │  ────────────────────────────────────────────  │   │
- │   │  Zero Trust IAM & Role Policy Check (RBAC)     │   │
- │   │  ────────────────────────────────────────────  │   │
- │   │  Inline Data Loss Prevention (DLP Redaction)   │   │
- │   │  ────────────────────────────────────────────  │   │
- │   │  SOC 2 / ISO 27001 Audit Logging (JSONL)       │   │
- │   └────────────────────────────────────────────────┘   │
- └──────────────────────────┬─────────────────────────────┘
-                            │
-              [TLS Handshake 2: Upstream TLS]
-                            ▼
- ┌────────────────────────────────────────────────────────┐
- │                 Origin Application Server              │
- │  - TCP Command Server (:5000)                          │
- │  - TCP File Transfer Server (:5001)                    │
- │  - UDP Audio Server with N-1 Mixing (:5002)            │
- │  - UDP Video Forwarding SFU (:5003)                    │
- └────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    C["<b>Client Tier</b><br/>PySide6 UI · CLI Client · Media Threads"]
+    subgraph P["Inline TLS Inspection Proxy :5443"]
+        direction TB
+        P1["TLS termination and decryption"] --> P2["DPI and magic-byte inspection"]
+        P2 --> P3["Zero Trust IAM and RBAC check"]
+        P3 --> P4["Inline DLP redaction"]
+        P4 --> P5["SOC 2 / ISO 27001 audit log (JSONL)"]
+    end
+    O["<b>Origin Application Server</b><br/>:5000 Command · :5001 File<br/>:5002 UDP Audio (N-1 mix) · :5003 UDP Video (SFU)"]
+    C -- "TLS handshake 1 (mutual TLS)" --> P
+    P -- "TLS handshake 2 (upstream TLS)" --> O
 ```
 
----
+## Features
 
-## 📦 What Was Already Present (Baseline Capabilities)
+### Baseline collaboration modules
 
-The core foundation is a multi-threaded, asynchronous local-area network communication suite built with Python, PySide6, and asyncio:
+| Module | Port | Transport | Description |
+|---|---|---|---|
+| Video conferencing | 5003 | UDP | SFU forwarding. OpenCV capture, JPEG encoding, 8-byte session header. |
+| Audio conferencing | 5002 | UDP | PyAudio capture with NumPy **N-1 mixing** (each user hears everyone except themselves, no echo cancellation needed). |
+| Screen sharing | 5000 | TCP | `mss` desktop capture, JPEG frames broadcast to peers. |
+| Group chat | 5000 | TCP | Custom binary framed protocol (see below). |
+| File transfer | 5001 | TCP | Chunked streaming upload/download with progress tracking. |
 
-1. **Module 1: Video Conferencing (UDP Port 5003)**
-   - Selective Forwarding Unit (SFU) architecture over UDP.
-   - Webcam capture using OpenCV, encoded to JPEG, packetized with a custom 8-byte session header (`!Q`), and broadcast to all conference participants.
-2. **Module 2: Audio Conferencing (UDP Port 5002)**
-   - Full-duplex microphone capture using PyAudio.
-   - Real-time **N-1 audio mixing** implemented with NumPy: each user receives the mixed audio of all other participants minus their own voice, preventing acoustic echo without heavy DSP cancellation.
-3. **Module 3: Screen Sharing (TCP Port 5000)**
-   - Ultra-fast desktop capture via `mss`.
-   - Frame compression into JPEG payloads broadcast to connected peers.
-4. **Module 4: Group Text Chat (TCP Port 5000)**
-   - High-throughput binary framed protocol:
-     - 4-byte Magic Number (`0xDEADBEEF`)
-     - 2-byte Protocol Version (`0x0100`)
-     - 2-byte Message Type identifier
-     - 8-byte Session ID
-     - 4-byte Payload Length followed by JSON text payload.
-5. **Module 5: File Transfer Server (TCP Port 5001)**
-   - Dedicated high-speed file server (`file_server.py`) supporting chunked streaming uploads and downloads with progress tracking and disk storage in `uploads/`.
+<details>
+<summary><b>Binary protocol frame layout</b></summary>
 
-### Baseline Security Gaps Before Enhancement
-* ❌ **Plaintext Traffic**: Data was unencrypted over the wire; vulnerable to packet sniffing.
-* ❌ **Dummy Authentication**: Accepted any username without credential validation, cryptographic tokens, or session lifetimes.
-* ❌ **No Authorization (RBAC)**: Any connected user could execute privileged actions.
-* ❌ **No Content Visibility / DLP**: Free exchange of uninspected files and plaintext secrets.
-* ❌ **No Compliance Audit Trail**: Absence of structured immutable security event logs.
-
----
-
-## 🔒 What Was Added (Enterprise Security Architecture)
-
-To bridge these gaps and align directly with **Zscaler's core technology pillars**, an entire enterprise security package (`security/`) and automated Public Key Infrastructure (`certs/`) were designed and integrated:
-
-| Component | Module | Key Capabilities |
+| Field | Size | Value / Purpose |
 |---|---|---|
-| **PKI & Certificate Engine** | `security/cert_generator.py` | Automated X.509 CA & certificate issuance (RSA-4096 / RSA-2048) with SANs and key usage policies. |
-| **TLS/mTLS Configuration** | `security/tls_config.py` | TLS 1.2+ cipher-suite enforcement, mutual authentication, dual-context generation. |
-| **Zero Trust Access Control** | `security/auth.py` | Stateless JWT tokens (HMAC-SHA256), 4-tier RBAC (`ADMIN`, `PRESENTER`, `MEMBER`, `GUEST`), device posture scoring, token revocation list. |
-| **Real-Time DLP Engine** | `security/dlp_engine.py` | Deep Packet Inspection with 9 detection patterns, Luhn-validated credit cards, in-flight text masking, and binary magic-byte inspection. |
-| **Security Audit Logging** | `security/audit_logger.py` | Immutable JSONL audit trail (`security_audit.jsonl`), in-memory ring buffer, and live threat metrics aggregator. |
-| **Inline TLS Inspection Proxy** | `security/tls_proxy.py` | Zscaler Zero Trust Exchange mirror: TLS termination, packet inspection, DLP sanitization, and upstream re-encryption. |
+| Magic number | 4 bytes | `0xDEADBEEF` |
+| Protocol version | 2 bytes | `0x0100` |
+| Message type | 2 bytes | Message type identifier |
+| Session ID | 8 bytes | Per-session identifier |
+| Payload length | 4 bytes | Length of the JSON payload that follows |
 
----
+</details>
 
-## 🔍 Deep Dive into Security Modules
+### Enterprise security layer
 
-### 1. Automated PKI & X.509 CA Engine (`security/cert_generator.py`)
-- Programmatically issues a Root Certificate Authority (CA) using 4096-bit RSA keys.
-- Signs leaf certificates for the **Server**, **Client**, and **Inspection Proxy** (2048-bit RSA, SHA-256).
-- Injects Subject Alternative Names (`DNS:localhost`, `IP:127.0.0.1`, `IP:<LAN_IP>`) to prevent hostname mismatch warnings.
-- Automatically stores keys and certificates in the `certs/` directory.
+The baseline had plaintext traffic, dummy authentication, no RBAC, no content inspection and no audit trail. The `security/` package and automated PKI close each of those gaps:
 
-### 2. Zero Trust Identity & Access Management (`security/auth.py`)
-- **Stateless JWT Engine**: Issues signed tokens (`sub`, `role`, `sid`, `iat`, `exp`, `trust`, `iss`) valid for 1 hour.
-- **Role-Based Access Control (RBAC)**:
-  - `ADMIN`: Unrestricted administrative privileges, user kick/ban, audit log inspection.
-  - `PRESENTER`: Screen share broadcasting, audio/video streaming, chat, file transfers.
-  - `MEMBER`: Chat, audio/video, file download/upload.
-  - `GUEST`: Read-only chat and audio/video listening.
-- **Device Posture Scoring**: Evaluates client device metadata (OS, OS version, hostname, network IP) to compute an initial trust score between `0.0` and `1.0`.
-- **Session Revocation**: In-memory token blacklist for immediate session termination upon security alerts or logout.
+| Gap | Fix | Module |
+|---|---|---|
+| Plaintext traffic | TLS 1.2+ with mutual TLS | `tls_config.py`, `cert_generator.py` |
+| Dummy authentication | Stateless JWT, device posture scoring, revocation list | `auth.py` |
+| No authorization | 4-tier RBAC | `auth.py` |
+| No content visibility | Inline DLP and magic-byte inspection | `dlp_engine.py` |
+| No audit trail | Immutable JSONL log and live metrics | `audit_logger.py` |
+| No traffic enforcement point | Inline TLS inspection proxy | `tls_proxy.py` |
 
-### 3. Data Loss Prevention Engine (`security/dlp_engine.py`)
-- **Regex & Algorithmic Patterns**:
-  1. *Credit Cards*: Matches Visa, Mastercard, Amex, Discover, and validates via the **Luhn Checksum Algorithm**.
-  2. *US Social Security Numbers (SSN)*: Format `XXX-XX-XXXX` with area and group checks.
-  3. *Indian Aadhaar Numbers*: 12-digit space-separated biometric ID patterns.
-  4. *AWS Access Keys*: Detects `AKIA[0-9A-Z]{16}` credentials.
-  5. *API Keys & Bearer Tokens*: High-entropy strings and secret key structures.
-  6. *Hardcoded Passwords / Secrets*: Inline password assignment detection.
-  7. *Corporate Email Leakage*: Unauthorized corporate domain address transfers.
-  8. *Cryptographic Private Keys*: Headers matching `-----BEGIN PRIVATE KEY-----` or RSA keys.
-  9. *Internal IPv4 / CIDR*: Leakage of internal enterprise RFC 1918 subnets.
-- **Action Policies**:
-  - `MASK`: Replaces sensitive characters in memory (e.g., `4111-XXXX-XXXX-1111`) before packet forwarding.
-  - `BLOCK`: Drops the application frame immediately and emits high-severity audit logs.
-- **Binary Magic-Byte Inspection**: Reads raw file headers to identify executable payloads (`b'MZ'` for PE/EXE, `b'%PDF'` for PDF, `b'PK'` for ZIP/DOCX) to block malicious executables and detect **extension spoofing** (e.g., malware disguised as `report.pdf`).
+## Security Modules
 
-### 4. Inline TLS Inspection Proxy (`security/tls_proxy.py`)
-- Emulates Zscaler's single-pass cloud architecture:
-  - **Downstream**: Accepts incoming TLS connections from clients on port `5443`.
-  - **DPI Unpacking**: Asynchronously reads the TCP stream, extracts protocol frames, and inspects decrypted JSON payloads.
-  - **Enforcement**: Runs DLP and authorization checks. Sanitized messages are rewritten in memory with updated header lengths.
-  - **Upstream**: Maintains a persistent TLS connection to the origin server on port `5000` and forwards permitted frames.
+<details open>
+<summary><b>1. PKI and X.509 CA engine</b> · <code>security/cert_generator.py</code></summary>
 
-### 5. Audit Logging & Compliance (`security/audit_logger.py`)
-- Adheres to enterprise security standards (SOC 2, ISO 27001).
-- Logs events to `security_audit.jsonl` with full event metadata (`event_id`, `timestamp`, `category`, `severity`, `actor`, `client_ip`, `action`, `status`, `resource`, `details`).
-- Thread-safe circular buffer (`deque`) stores the last 1,000 security events for low-latency queries.
+- Issues a Root CA with 4096-bit RSA keys.
+- Signs leaf certificates for the server, client and inspection proxy (RSA-2048, SHA-256).
+- Adds Subject Alternative Names (`DNS:localhost`, `IP:127.0.0.1`, `IP:<LAN_IP>`) to avoid hostname mismatch warnings.
+- Stores all keys and certificates in `certs/`.
 
----
+</details>
 
-## 🌐 Network Port & Protocol Matrix
+<details open>
+<summary><b>2. Zero Trust identity and access</b> · <code>security/auth.py</code></summary>
 
-| Service | Port | Protocol | Encryption / Security | Purpose |
+- **Stateless JWT (HMAC-SHA256):** claims `sub`, `role`, `sid`, `iat`, `exp`, `trust`, `iss`, valid for 1 hour.
+- **Device posture scoring:** OS, OS version, hostname and network IP produce an initial trust score from `0.0` to `1.0`.
+- **Session revocation:** in-memory token blacklist for immediate termination on alerts or logout.
+
+| Role | Permissions |
+|---|---|
+| `ADMIN` | Full control, kick/ban users, audit log inspection |
+| `PRESENTER` | Screen share, audio/video, chat, file transfer |
+| `MEMBER` | Chat, audio/video, file upload/download |
+| `GUEST` | Read-only chat, audio/video listening |
+
+</details>
+
+<details open>
+<summary><b>3. Data Loss Prevention engine</b> · <code>security/dlp_engine.py</code></summary>
+
+| # | Detector | Notes |
+|---|---|---|
+| 1 | Credit cards | Visa, Mastercard, Amex, Discover, validated with the **Luhn** checksum |
+| 2 | US SSN | `XXX-XX-XXXX` with area and group checks |
+| 3 | Indian Aadhaar | 12-digit space-separated pattern |
+| 4 | AWS access keys | `AKIA[0-9A-Z]{16}` |
+| 5 | API keys and bearer tokens | High-entropy and secret-key structures |
+| 6 | Hardcoded passwords | Inline password assignments |
+| 7 | Corporate email leakage | Unauthorized corporate domain addresses |
+| 8 | Private keys | `-----BEGIN PRIVATE KEY-----` and RSA headers |
+| 9 | Internal IPv4 / CIDR | RFC 1918 subnet leakage |
+
+**Actions**
+- `MASK`: redacts in memory before forwarding, e.g. `4111-XXXX-XXXX-1111`.
+- `BLOCK`: drops the frame and emits a high-severity audit event.
+
+**Binary inspection:** reads raw file headers (`MZ` for PE/EXE, `%PDF`, `PK` for ZIP/DOCX) to block executables and detect **extension spoofing**, such as malware renamed `report.pdf`.
+
+</details>
+
+<details open>
+<summary><b>4. Inline TLS inspection proxy</b> · <code>security/tls_proxy.py</code></summary>
+
+1. **Downstream:** accepts client TLS connections on port `5443`.
+2. **DPI:** reads the TCP stream asynchronously, extracts protocol frames and inspects the decrypted JSON.
+3. **Enforcement:** runs DLP and authorization checks, rewriting sanitized frames in memory with updated header lengths.
+4. **Upstream:** keeps a persistent TLS connection to the origin on port `5000` and forwards permitted frames.
+
+</details>
+
+<details open>
+<summary><b>5. Audit logging and compliance</b> · <code>security/audit_logger.py</code></summary>
+
+- Structured events written to `security_audit.jsonl` (`event_id`, `timestamp`, `category`, `severity`, `actor`, `client_ip`, `action`, `status`, `resource`, `details`).
+- Thread-safe ring buffer (`deque`) of the last 1,000 events for low-latency queries.
+- Designed around SOC 2 and ISO 27001 style logging practices.
+
+</details>
+
+## Network Matrix
+
+| Service | Port | Protocol | Security | Purpose |
 |---|---|---|---|---|
-| **TLS Inspection Proxy** | `5443` | TCP | TLS 1.2+ / mTLS | Ingress inspection point, DPI & DLP filter |
-| **Command & Chat Server** | `5000` | TCP | TLS (via Proxy) | Login, messaging, presence, screen share |
-| **File Transfer Server** | `5001` | TCP | TLS | Chunked file upload and download |
-| **Audio Conference** | `5002` | UDP | Plain UDP (Low Latency) | Real-time voice stream with N-1 mixing |
-| **Video Conference** | `5003` | UDP | Plain UDP (Low Latency) | Real-time webcam stream via SFU |
+| TLS Inspection Proxy | 5443 | TCP | TLS 1.2+ / mTLS | Ingress inspection, DPI and DLP |
+| Command and Chat Server | 5000 | TCP | TLS (via proxy) | Login, messaging, presence, screen share |
+| File Transfer Server | 5001 | TCP | TLS | Chunked upload/download |
+| Audio Conference | 5002 | UDP | Plain UDP | Low-latency voice with N-1 mixing |
+| Video Conference | 5003 | UDP | Plain UDP | Low-latency webcam via SFU |
 
----
+## Quick Start
 
-## 🛠️ Prerequisites & Installation
+**Requirements:** Python 3.10+ (tested on 3.11 and 3.13), Windows / Linux / macOS. A microphone and webcam are optional.
 
-### 1. System Requirements
-- Python 3.10+ (Tested on Python 3.11 & 3.13)
-- Windows / Linux / macOS
-- Audio input/output device and webcam (optional for media tests)
-
-### 2. Install Python Dependencies
-```powershell
+```bash
 pip install -r requirements.txt
 ```
 
-*Installed dependencies include:*
-- `PySide6`: Modern Qt graphical interface.
-- `cryptography`: X.509 PKI, RSA key generation, and certificate management.
-- `PyJWT`: JSON Web Token creation and cryptographic verification.
-- `numpy`: Fast vectorized matrix audio mixing.
-- `pyaudio`: Real-time cross-platform audio capture.
-- `opencv-python`: Video capture and JPEG encoding/decoding.
-- `mss`: Ultra-fast screen capture.
-- `Pillow`: Image processing utilities.
+<details>
+<summary>Dependencies</summary>
 
----
+`PySide6` (GUI) · `cryptography` (PKI) · `PyJWT` (tokens) · `numpy` (audio mixing) · `pyaudio` (audio capture) · `opencv-python` (video) · `mss` (screen capture) · `Pillow` (imaging)
 
-## 🚀 Step-by-Step Execution Guide
+</details>
 
-### Step 1: Generate PKI Certificates (One-Time Setup)
-```powershell
+**1. Generate certificates (one time)**
+```bash
 python -m security.cert_generator --server-ip 127.0.0.1
 ```
-*Creates the Root CA, server certificates, client certificates, and proxy certificates inside the `certs/` folder.*
 
-### Step 2: Start the Origin Application Server (Terminal 1)
-```powershell
+**2. Start the origin server** (Terminal 1). Launches the admin GUI and ports 5000-5003.
+```bash
 python main_server.py
 ```
-*Spawns the GUI Admin Console, starts the Command Server on port 5000, File Server on port 5001, Audio Server on port 5002, and Video Server on port 5003.*
 
-### Step 3: Start the Inline TLS Inspection Proxy (Terminal 2)
-```powershell
+**3. Start the inspection proxy** (Terminal 2). Listens on 5443, tunnels to 5000.
+```bash
 python -m security.tls_proxy 5443 5000
 ```
-*Starts the Zscaler-style proxy listening on TLS port 5443 and tunneling inspected traffic to origin port 5000.*
 
-### Step 4: Launch the Client (Terminal 3)
-```powershell
-python client.py
-```
-*Opens the PySide6 collaboration client interface for text chat, video, audio, screen share, and file transfer.*
-
-*(Optional) Headless CLI Client for fast testing:*
-```powershell
-python cli_client.py
+**4. Launch a client** (Terminal 3)
+```bash
+python client.py          # PySide6 GUI
+python cli_client.py      # optional headless client
 ```
 
----
+## Demos
 
-## ⚡ Instant Interview Demos (CLI One-Liners)
+Run each security subsystem straight from the terminal.
 
-Demonstrate individual security subsystems directly from the terminal during an interview:
+<details>
+<summary><b>Demo 1: DLP detection and in-flight redaction</b></summary>
 
-### Demo 1: Real-Time DLP Engine (Pattern Match & In-Flight Redaction)
 ```powershell
 python -c "from security.dlp_engine import DLPEngine; e = DLPEngine(); res = e.scan_text('Transfer $500 to card 4111-1111-1111-1111 with key AKIAIOSFODNN7EXAMPLE'); print('Overall Action:', res.action); print('Sanitized Text:', res.redacted_text)"
 ```
-*Demonstrates pattern matching with Luhn verification and automated in-memory redaction.*
+Shows Luhn-verified pattern matching and in-memory redaction.
 
-### Demo 2: Zero Trust Authentication, Device Scoring & RBAC
+</details>
+
+<details>
+<summary><b>Demo 2: Authentication, device scoring and RBAC</b></summary>
+
 ```powershell
 python -c "from security.auth import AuthEngine, Permission; a = AuthEngine(); t = a.authenticate('alice', 'SecurePassword123', device_info={'os_name':'Windows','os_version':'11','hostname':'Corp-PC','ip_address':'192.168.1.50'}); u = a.validate_token(t); print('User:', u.username, '| Role:', u.role.value, '| Trust Score:', u.device_context.trust_score); print('Can Kick Users:', a.check_permission(u, Permission.KICK_USER))"
 ```
-*Demonstrates dynamic device posture trust-scoring, JWT issuance, and RBAC permission enforcement.*
+Shows trust scoring, JWT issuance and permission enforcement.
 
-### Demo 3: Security Audit Logger & Compliance Statistics
+</details>
+
+<details>
+<summary><b>Demo 3: Audit logger statistics</b></summary>
+
 ```powershell
 python -c "from security.audit_logger import AuditLogger; logger = AuditLogger(); print('Audit Statistics:', logger.get_statistics())"
 ```
-*Demonstrates the in-memory telemetry ring buffer tracking security events.*
+Shows the in-memory telemetry ring buffer.
 
----
+</details>
 
-## 📄 Resume Presentation & Talking Points
-
-### Resume Bullet Points (Tailored for Zscaler)
-- **Zero Trust Collaboration Platform & Inline TLS Proxy**: Engineered an enterprise-grade real-time collaboration suite featuring an inline TLS inspection proxy mirroring **Zscaler's Zero Trust Exchange** — terminating client TLS, executing Deep Packet Inspection (DPI) on binary protocol frames, and re-encrypting upstream sessions.
-- **Zero Trust IAM & Role-Based Access Control**: Implemented stateless JWT authentication (HMAC-SHA256) with dynamic device posture evaluation (calculating device trust scores) and granular RBAC policies across 4 user tiers with token revocation blacklists.
-- **Real-Time Data Loss Prevention (DLP)**: Developed an inline DLP scanning engine with 9 pattern recognizers and Luhn algorithm validation (credit cards, SSNs, AWS credentials) with in-flight payload masking and binary magic-byte inspection preventing extension-spoofing malware.
-- **SOC 2 Compliant Audit Logging**: Built an asynchronous audit logger generating structured JSONL logs (`security_audit.jsonl`) and maintaining an in-memory ring buffer for low-latency operational threat metrics.
-- **High-Concurrency Multi-Protocol Media Core**: Built a custom binary protocol handling 5 concurrent real-time services across 4 dedicated TCP/UDP ports, including an SFU-based UDP video forwarder, N-1 audio mixing with NumPy, and chunked TCP file transfer.
-
-### Interview Elevator Pitch
-> *"My project is a secure LAN collaboration suite designed specifically around Zscaler's architectural philosophy. While standard applications connect directly to a backend, I engineered an inline TLS inspection proxy that acts as an enforcement node. It terminates TLS handshakes, performs deep packet inspection on our custom binary protocol, evaluates zero-trust policies and device posture, runs real-time DLP to mask sensitive data like credit cards and API keys in-flight, and re-encrypts the session upstream to the server — giving complete visibility without compromising performance."*
-
----
-
-## 📁 Repository Directory Structure
+## Project Structure
 
 ```text
 cn/
-│
-├── certs/                              # X.509 PKI Certificates & Keys
-│   ├── ca_cert.pem & ca_key.pem       # Root Certificate Authority
-│   ├── server_cert.pem & server_key.pem
-│   ├── client_cert.pem & client_key.pem
-│   └── proxy_cert.pem & proxy_key.pem
-│
-├── security/                           # Enterprise Security Package
-│   ├── __init__.py                     # Package initialization & exports
-│   ├── cert_generator.py               # Automated X.509 PKI generator
-│   ├── tls_config.py                   # TLS 1.2+ & mTLS context factory
-│   ├── auth.py                         # Zero Trust IAM (JWT, RBAC, Trust Scoring)
-│   ├── dlp_engine.py                   # Inline DLP Engine (Regex, Luhn, Magic Bytes)
-│   ├── audit_logger.py                 # Structured JSONL Audit Trail & Metrics
-│   └── tls_proxy.py                    # Zscaler-Style Inline TLS Inspection Proxy
-│
-├── uploads/                            # Shared file transfer repository
-├── client.py                           # PySide6 GUI collaboration client
-├── cli_client.py                       # Lightweight headless CLI protocol client
-├── file_server.py                      # Dedicated chunked TCP file transfer server
-├── main_server.py                      # Multi-server supervisor and Qt GUI launcher
-├── server.py                           # Core protocol handlers & UDP media servers
-├── requirements.txt                    # Project dependencies
-└── README.md                           # Master project documentation
+├── certs/                  # X.509 CA, server, client and proxy certs/keys
+├── security/               # Enterprise security package
+│   ├── __init__.py
+│   ├── cert_generator.py   # Automated PKI
+│   ├── tls_config.py       # TLS 1.2+ / mTLS context factory
+│   ├── auth.py             # JWT, RBAC, trust scoring
+│   ├── dlp_engine.py       # Regex, Luhn, magic bytes
+│   ├── audit_logger.py     # JSONL audit trail and metrics
+│   └── tls_proxy.py        # Inline TLS inspection proxy
+├── uploads/                # Shared file transfer storage
+├── client.py               # PySide6 GUI client
+├── cli_client.py           # Headless CLI client
+├── file_server.py          # Chunked TCP file server
+├── main_server.py          # Server supervisor and Qt GUI launcher
+├── server.py               # Protocol handlers and UDP media servers
+├── requirements.txt
+└── README.md
 ```
-#   s e c u r e _ l a n _ z e r o _ T r u s t  
- #   s e c u r e _ l a n _ z e r o _ T r u s t  
- #   s e c u r e _ l a n _ z e r o _ T r u s t  
- 
