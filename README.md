@@ -1,306 +1,252 @@
-from pathlib import Path
+<div align="center">
 
-readme = r'''# SecureLAN
-### Zero-Trust LAN Collaboration Suite with Inline TLS Inspection
+# SecureLAN
 
-SecureLAN is a Python-based local-area-network collaboration application that combines real-time communication features with a security layer inspired by Zero Trust network access principles.
+### Zero Trust Communication Suite with Inline TLS Inspection Proxy
 
-It brings together **video conferencing, N-1 audio mixing, screen sharing, group chat, and chunked file transfer** with an inline TLS inspection proxy, role-based access control (RBAC), data loss prevention (DLP), and structured security-event logging.
+Real-time video, audio, screen sharing, chat and file transfer, secured by mTLS, JWT/RBAC, inline DLP and audit logging.
 
-> **Project note:** SecureLAN is an educational implementation inspired by enterprise security architectures. It should not be treated as production-ready or as a certification of SOC 2 or ISO 27001 compliance without independent security review and validation.
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Qt](https://img.shields.io/badge/UI-PySide6-41CD52?logo=qt&logoColor=white)
+![TLS](https://img.shields.io/badge/TLS-1.2%2B%20%7C%20mTLS-blue)
+![Auth](https://img.shields.io/badge/Auth-JWT%20%2B%20RBAC-orange)
+![DLP](https://img.shields.io/badge/DLP-9%20detectors-red)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
 
----
+[Architecture](#architecture) · [Features](#features) · [Security Modules](#security-modules) · [Quick Start](#quick-start) · [Demos](#demos) · [Structure](#project-structure)
 
-## Contents
-
-- [Highlights](#highlights)
-- [Architecture](#architecture)
-- [Communication Features](#communication-features)
-- [Security Components](#security-components)
-- [Ports and Protocols](#ports-and-protocols)
-- [Requirements](#requirements)
-- [Installation and Setup](#installation-and-setup)
-- [Run SecureLAN](#run-securelan)
-- [Security Demos](#security-demos)
-- [Repository Structure](#repository-structure)
-- [Known Design Notes](#known-design-notes)
+</div>
 
 ---
 
-## Highlights
+## Overview
 
-| Area | Capabilities |
-|---|---|
-| **Collaboration** | Group chat, video conferencing, audio conferencing, screen sharing, file transfer |
-| **Transport** | TCP-based control and file transfer; UDP-based audio and video |
-| **Identity and access** | JWT-based sessions, four roles, permission checks, token revocation |
-| **Device context** | Initial device-posture trust score based on client metadata |
-| **Content protection** | Pattern-based DLP scanning, text redaction, file-signature checks |
-| **Traffic inspection** | Inline TLS/mTLS proxy for inspected control traffic |
-| **Observability** | Structured JSONL security events and in-memory event statistics |
+SecureLAN is a multi-threaded, asyncio-based LAN collaboration suite. Instead of letting clients talk directly to the origin server, all control and chat traffic passes through an **inline TLS inspection proxy** that decrypts, inspects, enforces policy, redacts sensitive data, and re-encrypts upstream. The design is inspired by the Zero Trust Exchange model used by Zscaler.
 
 ## Architecture
 
-Control and chat traffic is designed to pass through the inline TLS inspection proxy before reaching the origin server. The proxy terminates the client-side TLS connection, inspects supported application frames, applies authorization and DLP checks, and forwards permitted traffic upstream.
-
 ```mermaid
 flowchart TD
-    A[Desktop Client / CLI Client] -->|TLS + mTLS| B[Inline Inspection Proxy<br/>TCP 5443]
-    B --> C[TLS Termination and Frame Parsing]
-    C --> D[Authentication and RBAC]
-    D --> E[DLP Inspection and Redaction]
-    E --> F[Audit Event Logging]
-    E -->|Permitted traffic| G[Origin Application Server]
-    G --> H[TCP Command and Chat :5000]
-    G --> I[TCP File Transfer :5001]
-    G --> J[UDP Audio Mixing :5002]
-    G --> K[UDP Video Forwarding :5003]
+    C["<b>Client Tier</b><br/>PySide6 UI · CLI Client · Media Threads"]
+    subgraph P["Inline TLS Inspection Proxy :5443"]
+        direction TB
+        P1["TLS termination and decryption"] --> P2["DPI and magic-byte inspection"]
+        P2 --> P3["Zero Trust IAM and RBAC check"]
+        P3 --> P4["Inline DLP redaction"]
+        P4 --> P5["SOC 2 / ISO 27001 audit log (JSONL)"]
+    end
+    O["<b>Origin Application Server</b><br/>:5000 Command · :5001 File<br/>:5002 UDP Audio (N-1 mix) · :5003 UDP Video (SFU)"]
+    C -- "TLS handshake 1 (mutual TLS)" --> P
+    P -- "TLS handshake 2 (upstream TLS)" --> O
 ```
 
-### Request flow
+## Features
 
-1. The client establishes a TLS connection to the inspection proxy.
-2. The proxy parses supported application frames and inspects their content.
-3. Authentication, role permissions, and DLP policies are evaluated.
-4. Permitted traffic is forwarded to the origin service; blocked or redacted events can be logged.
-5. The application server handles chat, file transfer, audio, and video services.
+### Baseline collaboration modules
 
-## Communication Features
+| Module | Port | Transport | Description |
+|---|---|---|---|
+| Video conferencing | 5003 | UDP | SFU forwarding. OpenCV capture, JPEG encoding, 8-byte session header. |
+| Audio conferencing | 5002 | UDP | PyAudio capture with NumPy **N-1 mixing** (each user hears everyone except themselves, no echo cancellation needed). |
+| Screen sharing | 5000 | TCP | `mss` desktop capture, JPEG frames broadcast to peers. |
+| Group chat | 5000 | TCP | Custom binary framed protocol (see below). |
+| File transfer | 5001 | TCP | Chunked streaming upload/download with progress tracking. |
 
-### Video conferencing
-- UDP-based Selective Forwarding Unit (SFU)-style forwarding.
-- Webcam capture and JPEG encoding using OpenCV.
-- Frames are packetized with a custom 8-byte session header.
+<details>
+<summary><b>Binary protocol frame layout</b></summary>
 
-### Audio conferencing
-- Full-duplex microphone capture using PyAudio.
-- N-1 audio mixing with NumPy: each participant receives the mix of other participants, excluding their own audio.
+| Field | Size | Value / Purpose |
+|---|---|---|
+| Magic number | 4 bytes | `0xDEADBEEF` |
+| Protocol version | 2 bytes | `0x0100` |
+| Message type | 2 bytes | Message type identifier |
+| Session ID | 8 bytes | Per-session identifier |
+| Payload length | 4 bytes | Length of the JSON payload that follows |
 
-### Screen sharing
-- Desktop capture using `mss`.
-- JPEG frame compression and delivery to connected peers.
+</details>
 
-### Group text chat
-- TCP-based binary framing with a JSON payload.
-- Frame fields include a magic number, protocol version, message type, session ID, payload length, and payload.
+### Enterprise security layer
 
-### File transfer
-- Dedicated TCP file server.
-- Chunked uploads and downloads with progress tracking.
-- Files are stored in the `uploads/` directory.
+The baseline had plaintext traffic, dummy authentication, no RBAC, no content inspection and no audit trail. The `security/` package and automated PKI close each of those gaps:
 
-## Security Components
+| Gap | Fix | Module |
+|---|---|---|
+| Plaintext traffic | TLS 1.2+ with mutual TLS | `tls_config.py`, `cert_generator.py` |
+| Dummy authentication | Stateless JWT, device posture scoring, revocation list | `auth.py` |
+| No authorization | 4-tier RBAC | `auth.py` |
+| No content visibility | Inline DLP and magic-byte inspection | `dlp_engine.py` |
+| No audit trail | Immutable JSONL log and live metrics | `audit_logger.py` |
+| No traffic enforcement point | Inline TLS inspection proxy | `tls_proxy.py` |
 
-The `security/` package contains the project's security-related modules.
+## Security Modules
 
-| Module | Responsibility |
+<details open>
+<summary><b>1. PKI and X.509 CA engine</b> · <code>security/cert_generator.py</code></summary>
+
+- Issues a Root CA with 4096-bit RSA keys.
+- Signs leaf certificates for the server, client and inspection proxy (RSA-2048, SHA-256).
+- Adds Subject Alternative Names (`DNS:localhost`, `IP:127.0.0.1`, `IP:<LAN_IP>`) to avoid hostname mismatch warnings.
+- Stores all keys and certificates in `certs/`.
+
+</details>
+
+<details open>
+<summary><b>2. Zero Trust identity and access</b> · <code>security/auth.py</code></summary>
+
+- **Stateless JWT (HMAC-SHA256):** claims `sub`, `role`, `sid`, `iat`, `exp`, `trust`, `iss`, valid for 1 hour.
+- **Device posture scoring:** OS, OS version, hostname and network IP produce an initial trust score from `0.0` to `1.0`.
+- **Session revocation:** in-memory token blacklist for immediate termination on alerts or logout.
+
+| Role | Permissions |
 |---|---|
-| `security/cert_generator.py` | Generates a local certificate authority and server, client, and proxy certificates |
-| `security/tls_config.py` | Creates TLS contexts and configures mutual TLS |
-| `security/auth.py` | JWT authentication, role-based access control, device-context scoring, and token revocation |
-| `security/dlp_engine.py` | Detects configured sensitive-data patterns, redacts text, and checks file-signature bytes |
-| `security/audit_logger.py` | Writes structured JSONL security events and maintains an in-memory event buffer |
-| `security/tls_proxy.py` | Accepts client TLS connections, inspects supported frames, and forwards permitted traffic |
+| `ADMIN` | Full control, kick/ban users, audit log inspection |
+| `PRESENTER` | Screen share, audio/video, chat, file transfer |
+| `MEMBER` | Chat, audio/video, file upload/download |
+| `GUEST` | Read-only chat, audio/video listening |
 
-### Roles
+</details>
 
-| Role | Intended permissions |
-|---|---|
-| `ADMIN` | Administrative actions, user management, and audit inspection |
-| `PRESENTER` | Presenting and collaboration features, including media and file transfer |
-| `MEMBER` | Chat, audio/video, and file upload/download |
-| `GUEST` | Limited access, intended for read-only chat and audio/video listening |
+<details open>
+<summary><b>3. Data Loss Prevention engine</b> · <code>security/dlp_engine.py</code></summary>
 
-The exact permissions depend on the policy checks implemented by the application.
+| # | Detector | Notes |
+|---|---|---|
+| 1 | Credit cards | Visa, Mastercard, Amex, Discover, validated with the **Luhn** checksum |
+| 2 | US SSN | `XXX-XX-XXXX` with area and group checks |
+| 3 | Indian Aadhaar | 12-digit space-separated pattern |
+| 4 | AWS access keys | `AKIA[0-9A-Z]{16}` |
+| 5 | API keys and bearer tokens | High-entropy and secret-key structures |
+| 6 | Hardcoded passwords | Inline password assignments |
+| 7 | Corporate email leakage | Unauthorized corporate domain addresses |
+| 8 | Private keys | `-----BEGIN PRIVATE KEY-----` and RSA headers |
+| 9 | Internal IPv4 / CIDR | RFC 1918 subnet leakage |
 
-### DLP detections
+**Actions**
+- `MASK`: redacts in memory before forwarding, e.g. `4111-XXXX-XXXX-1111`.
+- `BLOCK`: drops the frame and emits a high-severity audit event.
 
-The DLP engine is configured to look for patterns such as:
+**Binary inspection:** reads raw file headers (`MZ` for PE/EXE, `%PDF`, `PK` for ZIP/DOCX) to block executables and detect **extension spoofing**, such as malware renamed `report.pdf`.
 
-- Payment-card numbers, with Luhn checksum validation
-- US Social Security number formats
-- Indian Aadhaar-number patterns
-- AWS access-key patterns
-- API keys, bearer tokens, and password-like assignments
-- Corporate email addresses
-- Private-key headers
-- Internal IPv4 addresses and CIDR ranges
+</details>
 
-The engine supports configured actions such as **masking** sensitive text or **blocking** a frame. It also checks file-signature bytes to help identify file-type mismatches, such as an executable presented with a document extension.
+<details open>
+<summary><b>4. Inline TLS inspection proxy</b> · <code>security/tls_proxy.py</code></summary>
 
-> Pattern-based DLP is not a guarantee that every secret or malicious file will be detected. Detection coverage depends on the implemented rules and the content that can be inspected.
+1. **Downstream:** accepts client TLS connections on port `5443`.
+2. **DPI:** reads the TCP stream asynchronously, extracts protocol frames and inspects the decrypted JSON.
+3. **Enforcement:** runs DLP and authorization checks, rewriting sanitized frames in memory with updated header lengths.
+4. **Upstream:** keeps a persistent TLS connection to the origin on port `5000` and forwards permitted frames.
 
-### Audit events
+</details>
 
-Security events are written to `security_audit.jsonl` with structured fields such as event ID, timestamp, category, severity, actor, client IP, action, status, resource, and details. An in-memory circular buffer keeps recent events available for quick queries.
+<details open>
+<summary><b>5. Audit logging and compliance</b> · <code>security/audit_logger.py</code></summary>
 
-## Ports and Protocols
+- Structured events written to `security_audit.jsonl` (`event_id`, `timestamp`, `category`, `severity`, `actor`, `client_ip`, `action`, `status`, `resource`, `details`).
+- Thread-safe ring buffer (`deque`) of the last 1,000 events for low-latency queries.
+- Designed around SOC 2 and ISO 27001 style logging practices.
 
-| Service | Port | Transport | Purpose |
-|---|---:|---|---|
-| TLS inspection proxy | `5443` | TCP / TLS | Client ingress, inspection, and policy enforcement |
-| Command and chat server | `5000` | TCP | Login, messaging, presence, and screen-sharing control |
-| File transfer server | `5001` | TCP | Chunked file uploads and downloads |
-| Audio conference | `5002` | UDP | Real-time audio and N-1 mixing |
-| Video conference | `5003` | UDP | Video forwarding |
+</details>
 
-**Important:** The project description identifies the audio and video streams as plain UDP. They should not be assumed to be encrypted merely because the control path uses TLS. Review the implementation and deployment configuration before using SecureLAN on an untrusted network.
+## Network Matrix
 
-## Requirements
+| Service | Port | Protocol | Security | Purpose |
+|---|---|---|---|---|
+| TLS Inspection Proxy | 5443 | TCP | TLS 1.2+ / mTLS | Ingress inspection, DPI and DLP |
+| Command and Chat Server | 5000 | TCP | TLS (via proxy) | Login, messaging, presence, screen share |
+| File Transfer Server | 5001 | TCP | TLS | Chunked upload/download |
+| Audio Conference | 5002 | UDP | Plain UDP | Low-latency voice with N-1 mixing |
+| Video Conference | 5003 | UDP | Plain UDP | Low-latency webcam via SFU |
 
-- Python 3.10 or newer
-- Windows, Linux, or macOS
-- Microphone, speakers/headphones, and webcam for the corresponding media features
-- The packages listed in `requirements.txt`
+## Quick Start
 
-## Installation and Setup
-
-### 1. Clone the repository
-
-```bash
-git clone <your-repository-url>
-cd <repository-directory>
-```
-
-Replace the placeholders with your repository URL and directory name.
-
-### 2. Create and activate a virtual environment (recommended)
-
-**Windows PowerShell**
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-**Linux / macOS**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-### 3. Install dependencies
+**Requirements:** Python 3.10+ (tested on 3.11 and 3.13), Windows / Linux / macOS. A microphone and webcam are optional.
 
 ```bash
-python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Some audio dependencies, particularly PyAudio, may require platform-specific system packages or installation steps.
+<details>
+<summary>Dependencies</summary>
 
-### 4. Generate development certificates
+`PySide6` (GUI) · `cryptography` (PKI) · `PyJWT` (tokens) · `numpy` (audio mixing) · `pyaudio` (audio capture) · `opencv-python` (video) · `mss` (screen capture) · `Pillow` (imaging)
 
-For local testing:
+</details>
 
+**1. Generate certificates (one time)**
 ```bash
 python -m security.cert_generator --server-ip 127.0.0.1
 ```
 
-Use the appropriate LAN IP if clients on other devices need to connect. Ensure the generated certificates contain the correct subject alternative names for the addresses clients use.
-
-> **Keep private keys private.** Do not commit generated private keys, production certificates, access tokens, or real audit data to a public repository. Check `.gitignore` before generating or adding files.
-
-## Run SecureLAN
-
-Start each component in a separate terminal, from the repository root.
-
-### Terminal 1 — Application server
-
+**2. Start the origin server** (Terminal 1). Launches the admin GUI and ports 5000-5003.
 ```bash
 python main_server.py
 ```
 
-This launches the server application and its communication services.
-
-### Terminal 2 — TLS inspection proxy
-
+**3. Start the inspection proxy** (Terminal 2). Listens on 5443, tunnels to 5000.
 ```bash
 python -m security.tls_proxy 5443 5000
 ```
 
-This starts the proxy on port `5443` and forwards inspected control traffic to the origin command server on port `5000`.
-
-### Terminal 3 — Desktop client
-
+**4. Launch a client** (Terminal 3)
 ```bash
-python client.py
+python client.py          # PySide6 GUI
+python cli_client.py      # optional headless client
 ```
 
-### Optional — CLI client
+## Demos
 
-```bash
-python cli_client.py
+Run each security subsystem straight from the terminal.
+
+<details>
+<summary><b>Demo 1: DLP detection and in-flight redaction</b></summary>
+
+```powershell
+python -c "from security.dlp_engine import DLPEngine; e = DLPEngine(); res = e.scan_text('Transfer $500 to card 4111-1111-1111-1111 with key AKIAIOSFODNN7EXAMPLE'); print('Overall Action:', res.action); print('Sanitized Text:', res.redacted_text)"
 ```
+Shows Luhn-verified pattern matching and in-memory redaction.
 
-The precise startup sequence and available features depend on the current implementation and local configuration. If a component fails to start, check the terminal output, certificate paths, and port availability.
+</details>
 
-## Security Demos
+<details>
+<summary><b>Demo 2: Authentication, device scoring and RBAC</b></summary>
 
-The following examples are intended for local demonstrations. Use synthetic test data only.
-
-### 1. DLP scanning and redaction
-
-```bash
-python -c "from security.dlp_engine import DLPEngine; e = DLPEngine(); res = e.scan_text('Test card 4111-1111-1111-1111 and key AKIAIOSFODNN7EXAMPLE'); print('Action:', res.action); print('Sanitized text:', res.redacted_text)"
+```powershell
+python -c "from security.auth import AuthEngine, Permission; a = AuthEngine(); t = a.authenticate('alice', 'SecurePassword123', device_info={'os_name':'Windows','os_version':'11','hostname':'Corp-PC','ip_address':'192.168.1.50'}); u = a.validate_token(t); print('User:', u.username, '| Role:', u.role.value, '| Trust Score:', u.device_context.trust_score); print('Can Kick Users:', a.check_permission(u, Permission.KICK_USER))"
 ```
+Shows trust scoring, JWT issuance and permission enforcement.
 
-Shows how the DLP engine responds to configured sensitive-data patterns.
+</details>
 
-### 2. Authentication and permission checks
+<details>
+<summary><b>Demo 3: Audit logger statistics</b></summary>
 
-```bash
-python -c "from security.auth import AuthEngine, Permission; a = AuthEngine(); t = a.authenticate('alice', 'DemoPassword123', device_info={'os_name':'Windows','os_version':'11','hostname':'Demo-PC','ip_address':'192.168.1.50'}); u = a.validate_token(t); print('User:', u.username, '| Role:', u.role.value, '| Trust score:', u.device_context.trust_score); print('Can kick users:', a.check_permission(u, Permission.KICK_USER))"
+```powershell
+python -c "from security.audit_logger import AuditLogger; logger = AuditLogger(); print('Audit Statistics:', logger.get_statistics())"
 ```
+Shows the in-memory telemetry ring buffer.
 
-Demonstrates token issuance, token validation, device-context scoring, and a permission check. The authentication example should be adjusted if the API or required configuration changes.
+</details>
 
-### 3. Audit logger statistics
-
-```bash
-python -c "from security.audit_logger import AuditLogger; logger = AuditLogger(); print(logger.get_statistics())"
-```
-
-Prints the logger's current statistics. Depending on the implementation, a fresh logger may have no events until actions are recorded.
-
-## Repository Structure
+## Project Structure
 
 ```text
-.
-├── certs/                     # Generated certificates and keys (keep private keys out of Git)
-├── security/
+cn/
+├── certs/                  # X.509 CA, server, client and proxy certs/keys
+├── security/               # Enterprise security package
 │   ├── __init__.py
-│   ├── cert_generator.py      # Local CA and certificate generation
-│   ├── tls_config.py          # TLS and mTLS context configuration
-│   ├── auth.py                # JWT, RBAC, trust scoring, revocation
-│   ├── dlp_engine.py          # Sensitive-data inspection and redaction
-│   ├── audit_logger.py        # Structured security-event logging
-│   └── tls_proxy.py           # Inline TLS inspection proxy
-├── uploads/                   # Transferred files
-├── client.py                  # Desktop collaboration client
-├── cli_client.py              # CLI client
-├── file_server.py             # Chunked file-transfer server
-├── main_server.py             # Server launcher / supervisor
-├── server.py                  # Core protocol handlers and media services
-├── requirements.txt           # Python dependencies
+│   ├── cert_generator.py   # Automated PKI
+│   ├── tls_config.py       # TLS 1.2+ / mTLS context factory
+│   ├── auth.py             # JWT, RBAC, trust scoring
+│   ├── dlp_engine.py       # Regex, Luhn, magic bytes
+│   ├── audit_logger.py     # JSONL audit trail and metrics
+│   └── tls_proxy.py        # Inline TLS inspection proxy
+├── uploads/                # Shared file transfer storage
+├── client.py               # PySide6 GUI client
+├── cli_client.py           # Headless CLI client
+├── file_server.py          # Chunked TCP file server
+├── main_server.py          # Server supervisor and Qt GUI launcher
+├── server.py               # Protocol handlers and UDP media servers
+├── requirements.txt
 └── README.md
 ```
-
-## Known Design Notes
-
-- **Development scope:** Treat this as a learning and demonstration project until it has undergone security testing and operational hardening.
-- **TLS inspection:** A TLS inspection proxy must be configured carefully. Clients need to trust the appropriate certificate chain, and private keys must be protected.
-- **Media traffic:** Confirm whether audio and video payloads are protected before deploying beyond a trusted test network.
-- **Device posture:** Metadata-based trust scoring is a demonstration of policy input, not proof that a device is secure.
-- **Audit and compliance:** Structured audit logs can support investigation, but they do not by themselves establish SOC 2 or ISO 27001 compliance.
-- **File inspection:** Magic-byte checks and pattern-based scanning are useful signals, not substitutes for malware scanning or sandboxing.
-
----
-
-## Project Summary
-
-SecureLAN brings real-time LAN collaboration and a set of security controls into one Python project. Its main learning areas include network programming, binary protocol framing, media streaming, TLS/mTLS, JWT authentication, RBAC, DLP, and structured security logging.
-'''
-
-path = Path("/mnt/data/README_SecureLAN_Improved.md")
-path.write_text(readme, encoding="utf-8")
-print(f"Created: {path}")
-print(f"Size: {path.stat().st_size:,} bytes")
